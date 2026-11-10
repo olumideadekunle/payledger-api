@@ -1,0 +1,20 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: payledger-api
+    ports:
+      - "8000:8000"
+    environment:
+      - PROJECT_NAME=PayLedger API
+      - ENVIRONMENT=production
+      - DEBUG=False
+      - SECRET_KEY=change-this-to-a-strong-secret-in-production-vault
+      - DATABASE_URL=sqlite+aiosqlite:///./data/payledger.db
+    volumes:
+      - payledger_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  payledger_data:
