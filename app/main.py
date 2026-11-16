@@ -17,10 +17,17 @@ from app.core.exceptions import PayLedgerException
 logging.basicConfig(level=logging.DEBUG if settings.DEBUG else logging.INFO)
 logger = logging.getLogger("payledger")
 
+_config_errors = settings.CONFIG_ERRORS
+for _err in _config_errors:
+    logger.error("Configuration error: %s", _err)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: ensure schema exists (also lazily retried per-request on serverless)
+    if _config_errors:
+        yield
+        return
     try:
         await ensure_db_initialized()
     except Exception:  # don't crash cold start; get_db will retry
@@ -67,6 +74,16 @@ async def request_context(request: Request, call_next):
     """Attach request IDs, timing, and security headers to every response."""
     request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
     start = time.perf_counter()
+    if _config_errors:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error_code": "SERVICE_MISCONFIGURED",
+                "detail": _config_errors,
+                "request_id": request_id,
+            },
+        )
     try:
         response = await call_next(request)
     except Exception:

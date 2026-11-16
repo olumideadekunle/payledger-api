@@ -3,7 +3,7 @@ from functools import lru_cache
 from typing import List
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from pydantic import field_validator, model_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DEV_SECRET = "supersecretjwtkeyforlocaldevelopmentpayledger123456"
@@ -73,18 +73,25 @@ class Settings(BaseSettings):
     def IS_PRODUCTION(self) -> bool:
         return self.ENVIRONMENT.lower() == "production"
 
-    @model_validator(mode="after")
-    def _guard_production(self) -> "Settings":
-        if self.IS_PRODUCTION:
+    @property
+    def CONFIG_ERRORS(self) -> List[str]:
+        """
+        Misconfigurations that make the deployment unsafe. Reported via HTTP 503
+        instead of crashing at import, so the cause is visible from the browser.
+        """
+        errors: List[str] = []
+        if self.IS_PRODUCTION or self.IS_SERVERLESS:
             if self.SECRET_KEY == _DEV_SECRET or len(self.SECRET_KEY) < 32:
-                raise ValueError(
-                    "SECRET_KEY must be set to a strong value (>=32 chars) in production."
+                errors.append(
+                    "SECRET_KEY is missing or too short. Set a random value of 32+ characters "
+                    "in Vercel → Settings → Environment Variables, then redeploy."
                 )
             if self.DATABASE_URL.startswith("sqlite") and self.IS_SERVERLESS:
-                raise ValueError(
-                    "SQLite is not persistent on Vercel. Set DATABASE_URL to a Postgres database."
+                errors.append(
+                    "No Postgres database configured. Connect one in Vercel → Storage "
+                    "(Neon) so DATABASE_URL / POSTGRES_URL is set, then redeploy."
                 )
-        return self
+        return errors
 
 
 @lru_cache()
