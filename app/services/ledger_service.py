@@ -29,6 +29,22 @@ class LedgerService:
         token = uuid.uuid4().hex[:12].upper()
         return f"{prefix}_{token}"
 
+    async def _lock_wallets(self, *wallet_ids: str) -> dict:
+        """
+        Re-read wallets with SELECT ... FOR UPDATE (row locks on Postgres; no-op on SQLite).
+        Locks are taken in a deterministic id order to prevent deadlocks between concurrent
+        opposite-direction transfers, and populate_existing refreshes any stale balances.
+        """
+        stmt = (
+            select(Wallet)
+            .where(Wallet.id.in_(wallet_ids))
+            .order_by(Wallet.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        res = await self.db.execute(stmt)
+        return {w.id: w for w in res.scalars().all()}
+
     async def execute_deposit(
         self,
         wallet: Wallet,
@@ -42,6 +58,7 @@ class LedgerService:
                 detail="Deposit amount must be strictly greater than zero.",
             )
 
+        wallet = (await self._lock_wallets(wallet.id))[wallet.id]
         ref = self.generate_reference("DEP")
 
         # 1. Update wallet balance
@@ -89,6 +106,7 @@ class LedgerService:
                 detail="Withdrawal amount must be strictly greater than zero.",
             )
 
+        wallet = (await self._lock_wallets(wallet.id))[wallet.id]
         if wallet.balance < amount:
             raise InsufficientFundsException(
                 available_balance=wallet.balance,
@@ -149,10 +167,10 @@ class LedgerService:
         if source_wallet.id == destination_wallet_id:
             raise SelfTransferException()
 
-        # Fetch and validate destination wallet
-        dest_stmt = select(Wallet).where(Wallet.id == destination_wallet_id)
-        res = await self.db.execute(dest_stmt)
-        dest_wallet = res.scalar_one_or_none()
+        # Lock both wallets (deterministic order) and fetch fresh balances
+        locked = await self._lock_wallets(source_wallet.id, destination_wallet_id)
+        source_wallet = locked[source_wallet.id]
+        dest_wallet = locked.get(destination_wallet_id)
 
         if not dest_wallet:
             raise WalletNotFoundException(destination_wallet_id)

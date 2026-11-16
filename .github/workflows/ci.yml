@@ -6,25 +6,51 @@ on:
   pull_request:
     branches: [ main, master ]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
+    name: Unit & integration tests
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -v
 
-      - name: Install Dependencies
+  postgres-smoke:
+    name: Postgres smoke test (production parity)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: payledger
+          POSTGRES_PASSWORD: payledger
+          POSTGRES_DB: payledger
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U payledger"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://payledger:payledger@localhost:5432/payledger
+      ENVIRONMENT: production
+      SECRET_KEY: ci-only-secret-key-that-is-long-enough-1234567890
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+      - name: Boot API and probe
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run Pytest Suite
-        run: |
-          pytest -v
+          uvicorn app.main:app --port 8000 &
+          for i in $(seq 1 30); do curl -sf localhost:8000/health && break; sleep 1; done
+          curl -sf localhost:8000/health | grep '"database":"up"'
+          curl -sf localhost:8000/openapi.json > /dev/null

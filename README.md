@@ -5,6 +5,8 @@
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-red?style=flat)](https://www.sqlalchemy.org/)
 [![Pydantic](https://img.shields.io/badge/Pydantic-v2-E92063?style=flat&logo=pydantic&logoColor=white)](https://docs.pydantic.dev/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/olumideadekunle/payledger-api/actions/workflows/ci.yml/badge.svg)](https://github.com/olumideadekunle/payledger-api/actions/workflows/ci.yml)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Folumideadekunle%2Fpayledger-api&env=SECRET_KEY,ENVIRONMENT&envDescription=SECRET_KEY%3A%2064%2B%20random%20chars.%20ENVIRONMENT%3A%20production&stores=%5B%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22neon%22%2C%22productSlug%22%3A%22neon%22%7D%5D)
 
 A production-grade, asynchronous financial ledger and digital wallet API built with **Python 3.12**, **FastAPI**, **SQLAlchemy 2.0 Async**, and **Pydantic v2**.
 
@@ -68,6 +70,7 @@ Clients can submit payments with an `X-Idempotency-Key` header.
 ### 4. Overdraft Prevention & ACID Transactions
 Transfers execute inside atomic database transactions:
 - Source and destination balances update together or rollback completely.
+- Wallet rows are locked with `SELECT ... FOR UPDATE` in deterministic ID order, so concurrent transfers can't double-spend and opposite-direction transfers can't deadlock.
 - Wallets with insufficient funds are rejected with HTTP 422 before any balance mutation occurs.
 - Self-transfers to the same wallet are strictly prohibited.
 
@@ -289,27 +292,41 @@ pytest
 
 To run with verbose output and coverage:
 ```bash
+pip install -r requirements-dev.txt
 pytest -v
 ```
 
+CI runs the test suite and also boots the API against a real **Postgres 16** service in production mode to guarantee deployment parity.
+
 ---
 
-## Pushing to GitHub
+## Deploying to Vercel (Serverless, Global Edge Network)
 
-To publish this project to your GitHub profile:
+The API runs as a Python serverless function (`api/index.py`) behind Vercel's global CDN. `vercel.json` routes every path to it.
 
-1. Create a new empty repository on GitHub named **`payledger-api`** (or your preferred name).
-2. Run the following commands in your terminal:
+**One-click:** use the **Deploy with Vercel** button above. It provisions a Neon Postgres database and prompts for the required env vars.
 
-```bash
-cd payledger-api
-git init
-git add .
-git commit -m "feat: Initial commit for PayLedger API high-performance financial ledger"
-git branch -M main
-git remote add origin https://github.com/olumideadekunle/payledger-api.git
-git push -u origin main
-```
+**Manual:**
+
+1. Import the repo at [vercel.com/new](https://vercel.com/new) (framework preset: *Other*).
+2. **Storage → Create Database → Neon (Postgres)** and connect it to the project. This injects `DATABASE_URL` / `POSTGRES_URL`. Prefer the **pooled** connection string (`-pooler` host).
+3. Under **Settings → Environment Variables**, add:
+
+   | Variable | Value |
+   |---|---|
+   | `ENVIRONMENT` | `production` |
+   | `SECRET_KEY` | output of `python -c "import secrets; print(secrets.token_urlsafe(64))"` |
+   | `CORS_ORIGINS` | `["https://your-frontend.com"]` (optional; defaults to `*`) |
+
+4. Deploy. Verify with `curl https://<your-app>.vercel.app/health`. It should report `"database":"up"`.
+
+**Serverless design notes**
+- SQLite is refused in production on Vercel, because its filesystem is ephemeral.
+- Connections use `NullPool` with asyncpg's statement cache disabled (PgBouncer/Neon-pooler safe).
+- Schema is created lazily on first request, because serverless runtimes don't reliably run ASGI lifespan events. For schema *changes*, adopt Alembic migrations.
+- Pick a Vercel function region close to your database (**Settings → Functions → Region**) to minimize latency.
+
+**Response hardening:** every response carries `X-Request-ID`, `X-Process-Time`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and HSTS (in production). Unhandled errors return a structured JSON body with the request ID for tracing.
 
 ---
 
