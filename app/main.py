@@ -142,6 +142,8 @@ async def health_check():
             "service": settings.PROJECT_NAME,
             "version": settings.VERSION,
             "environment": settings.ENVIRONMENT,
+            "mode": "demo" if settings.IS_DEMO else "full",
+            "warnings": settings.CONFIG_WARNINGS,
         },
     )
 

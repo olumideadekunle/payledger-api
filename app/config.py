@@ -63,7 +63,39 @@ class Settings(BaseSettings):
     @field_validator("DATABASE_URL")
     @classmethod
     def _normalize_db(cls, v: str) -> str:
-        return normalize_database_url(v)
+        v = normalize_database_url(v)
+        # Zero-config on Vercel: only /tmp is writable. Data there is ephemeral (demo mode).
+        if os.getenv("VERCEL") and v.startswith("sqlite") and "/tmp/" not in v:
+            v = "sqlite+aiosqlite:////tmp/payledger.db"
+        return v
+
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def _default_secret(cls, v: str) -> str:
+        # Zero-config on Vercel: derive a stable per-project key so JWTs survive cold starts.
+        # Not secret-grade (project id is not confidential) — demo mode only; flagged in /health.
+        if os.getenv("VERCEL") and v == _DEV_SECRET:
+            import hashlib
+
+            seed = "payledger-demo:" + (os.getenv("VERCEL_PROJECT_ID") or os.getenv("VERCEL_URL", ""))
+            v = hashlib.sha256(seed.encode()).hexdigest()
+            os.environ["PAYLEDGER_DEMO_SECRET"] = "1"
+        return v
+
+    @property
+    def IS_DEMO(self) -> bool:
+        return self.IS_SERVERLESS and (
+            self.DATABASE_URL.startswith("sqlite") or bool(os.getenv("PAYLEDGER_DEMO_SECRET"))
+        )
+
+    @property
+    def CONFIG_WARNINGS(self) -> List[str]:
+        warnings: List[str] = []
+        if self.IS_SERVERLESS and self.DATABASE_URL.startswith("sqlite"):
+            warnings.append("Demo mode: no Postgres connected, data is temporary and may reset.")
+        if os.getenv("PAYLEDGER_DEMO_SECRET"):
+            warnings.append("Demo mode: SECRET_KEY not set, using an auto-generated demo key.")
+        return warnings
 
     @property
     def IS_SERVERLESS(self) -> bool:
@@ -80,8 +112,13 @@ class Settings(BaseSettings):
         instead of crashing at import, so the cause is visible from the browser.
         """
         errors: List[str] = []
-        if self.IS_PRODUCTION or self.IS_SERVERLESS:
-            if self.SECRET_KEY == _DEV_SECRET or len(self.SECRET_KEY) < 32:
+        # Only enforced when ENVIRONMENT=production is explicitly set; otherwise demo mode.
+        if self.IS_PRODUCTION:
+            if (
+                self.SECRET_KEY == _DEV_SECRET
+                or len(self.SECRET_KEY) < 32
+                or os.getenv("PAYLEDGER_DEMO_SECRET")
+            ):
                 errors.append(
                     "SECRET_KEY is missing or too short. Set a random value of 32+ characters "
                     "in Vercel → Settings → Environment Variables, then redeploy."
